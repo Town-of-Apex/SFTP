@@ -1,0 +1,13 @@
+services:
+  sftp-uploader:
+    build: .
+    container_name: sftp-everbridge-scheduler
+    restart: unless-stopped
+    volumes:
+      # Mount the key file and CSV as volumes to allow updates without rebuilding the image
+      - ./Apex.key:/app/Apex.key
+      - ./Emergency_Alert_Registrations(in).csv:/app/Emergency_Alert_Registrations(in).csv
+    environment:
+      - TZ=America/New_York
+    # Note: No ports need to be exposed as it's an outbound service.
+    # Manual triggers: `docker compose exec sftp-uploader uv run python main.py`
