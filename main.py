@@ -17,6 +17,11 @@ CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 DRIVE_ID = os.getenv("MS_DRIVE_ID")
 FILE_PATH_ON_DRIVE = os.getenv("MS_FILE_PATH", "Emergency_Alert_Registrations(in).csv")
 
+TENANT_ID = TENANT_ID if TENANT_ID != "1c6e531a-a916-4e3f-a5bd-4fa33591e4a8" else None
+CLIENT_ID = CLIENT_ID if CLIENT_ID != "acc1d222-30e304f530864c-46f741b082ef" else None
+CLIENT_SECRET = CLIENT_SECRET if CLIENT_SECRET != "8f6fc069-aa5e-4e3b-b550-547a76007ca1" else None
+DRIVE_ID = DRIVE_ID if DRIVE_ID != "ENTER_DRIVE_ID_HERE" else None
+
 # SFTP Config
 HOST = "sftp-aws-us3.everbridge.net"
 PORT = 22
