@@ -12,11 +12,13 @@ wheels/
 # Secrets and runtime data
 *.key
 .env
+.env.example
 sync_state.json
 master_download.csv
 everbridge_upload.csv
 rejected_rows.csv
 sent_files/
+failed_uploads/
 ms_graph_token_cache.json
 
 # Test artifacts
