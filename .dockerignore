@@ -1,0 +1,13 @@
+.venv
+.env
+*.key
+sync_state.json
+master_download.csv
+everbridge_upload.csv
+rejected_rows.csv
+sent_files/
+failed_uploads/
+__pycache__/
+.pytest_cache/
+.git
+.cursor

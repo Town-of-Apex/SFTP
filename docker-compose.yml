@@ -3,18 +3,22 @@ services:
     build: .
     container_name: sftp-everbridge-scheduler
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
-      # Mount the key file and state file as volumes to allow persistence without rebuilding
       - ./Apex.key:/app/Apex.key
       - ./sync_state.json:/app/sync_state.json
       - ./sent_files:/app/sent_files
+      - ./failed_uploads:/app/failed_uploads
+      # Delegated Graph auth cache — create on host before first deploy:
+      #   uv run explore_onedrive.py --device-login
+      - ./ms_graph_token_cache.json:/app/ms_graph_token_cache.json
     environment:
       - TZ=America/New_York
-      # Graph API Config (Enter details from IT below)
-      - MS_TENANT_ID=ENTER_TENANT_ID_HERE
-      - MS_CLIENT_ID=ENTER_CLIENT_ID_HERE
-      - MS_CLIENT_SECRET=ENTER_CLIENT_SECRET_HERE
-      - MS_DRIVE_ID=ENTER_DRIVE_ID_HERE
-      - MS_FILE_PATH=Emergency_Alert_Registrations(in).csv
-    # Note: No ports need to be exposed as it's an outbound service.
-    # Manual triggers: `docker compose exec sftp-uploader uv run python main.py`
+    # One-time sign-in (on host, not in container — needs browser + localhost:8400):
+    #   uv run explore_onedrive.py --device-login
+    # Manual sync / admin:
+    #   docker compose exec sftp-uploader uv run python main.py
+    #   docker compose exec sftp-uploader uv run python scheduler.py --run-now
+    #   docker compose exec sftp-uploader uv run python admin.py preview
+    #   docker compose exec sftp-uploader uv run python explore_onedrive.py

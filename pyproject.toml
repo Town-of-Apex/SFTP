@@ -1,7 +1,7 @@
 [project]
 name = "sftp-everbridge"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Sync emergency alert registrations from OneDrive to Everbridge SFTP"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -10,4 +10,14 @@ dependencies = [
     "msal",
     "requests",
     "pytz",
+    "dotenv>=0.9.9",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

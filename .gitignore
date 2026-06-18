@@ -9,5 +9,17 @@ wheels/
 # Virtual environments
 .venv
 
-# Keys
+# Secrets and runtime data
 *.key
+.env
+sync_state.json
+master_download.csv
+everbridge_upload.csv
+rejected_rows.csv
+sent_files/
+ms_graph_token_cache.json
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
