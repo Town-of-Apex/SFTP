@@ -28,17 +28,17 @@ Everbridge **upserts by External ID**. Opt-outs are filtered upstream in Power A
 - [x] Commit `sync_state.json` only after successful SFTP upload
 - [x] Preserve failed batches in `failed_uploads/` with metadata JSON
 - [x] Leave staging CSV in place on failure for retry
-- [ ] **Verify:** Simulate SFTP failure → re-run → same rows upload successfully
+- [x] **Verify:** Simulate SFTP failure → re-run → same rows upload successfully
 
 ### 0.2 Complete Microsoft Graph / OneDrive integration
 
-- [ ] Work with IT to register Entra app with `Files.Read.All` (application permission)
-- [ ] Obtain admin consent for application permissions
-- [ ] Run `uv run python explore_onedrive.py` to discover `MS_DRIVE_ID` and confirm file path
-- [ ] Copy `.env.example` to `.env` and populate all `MS_`* variables
+- [x] Work with IT to register Entra app with `Files.Read.All` (application permission)
+- [x] Obtain admin consent for application permissions
+- [x] Run `uv run python explore_onedrive.py` to discover `MS_DRIVE_ID` and confirm file path
+- [x] Copy `.env.example` to `.env` and populate all `MS_`* variables
 - [x] Standardize filename to `Emergency_Alert_Registrations(in).csv` everywhere
 - [x] Gate local CSV fallback behind `ALLOW_LOCAL_FALLBACK` (default `false`)
-- [ ] **Verify:** `docker compose exec sftp-uploader uv run python main.py` downloads from OneDrive with no local CSV present
+- [x] **Verify:** `docker compose exec sftp-uploader uv run python main.py` downloads from OneDrive with no local CSV present
 
 ### 0.3 Secrets and security hygiene
 
