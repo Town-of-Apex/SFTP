@@ -15,7 +15,8 @@ ENV UV_COMPILE_BYTECODE=1
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
-COPY main.py scheduler.py admin.py explore_onedrive.py ./
+COPY main.py scheduler.py admin.py api.py explore_onedrive.py ./
 COPY src ./src
 
+# Default: scheduled sync. Override command for the delete API service.
 CMD ["uv", "run", "python", "scheduler.py"]

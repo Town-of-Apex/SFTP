@@ -114,6 +114,92 @@ docker compose exec sftp-uploader uv run python admin.py delete-external-id 1234
 
 ---
 
+## Delete via HTTP (Power Automate / Teams)
+
+The `delete-api` Compose service exposes a minimal HTTP API (no auth yet — keep the host/port private). Same Everbridge delete path as the CLI.
+
+```bash
+docker compose up -d --build delete-api
+```
+
+Listens on host port `8080` by default (`DELETE_API_PORT` overrides the published port).
+
+### Endpoints
+
+| Method | Path | Body | Purpose |
+|--------|------|------|---------|
+| `GET` | `/health` | — | Liveness |
+| `DELETE` | `/contacts/{employeeId}` | — | Delete by External ID |
+| `POST` | `/delete` | `{"employeeId": "1234"}` | Same delete (Power Automate-friendly) |
+
+### Power Automate HTTP action examples
+
+After the adaptive-card confirmation, call either:
+
+**DELETE**
+
+- Method: `DELETE`
+- URI: `http://<host>:8080/contacts/<employeeId>`
+
+**POST** (often easier when the ID comes from a card input)
+
+- Method: `POST`
+- URI: `http://<host>:8080/delete`
+- Headers: `Content-Type: application/json`
+- Body:
+
+```json
+{
+  "employeeId": "1234"
+}
+```
+
+Success response (`200`):
+
+```json
+{
+  "status": "deleted",
+  "employeeId": "1234",
+  "contact": "Jane Doe",
+  "archive": "sent_files/delete_2026-07-13_10-00-00_1234.csv",
+  "stateEntriesRemoved": 1
+}
+```
+
+Errors: `400` bad/missing ID, `502` Everbridge/SFTP failure, `503` master CSV unavailable.
+
+### Expose to Power Automate (Cloudflare quick tunnel)
+
+Power Automate runs in Microsoft's cloud, so it **cannot** call `localhost` on your laptop. For a laptop demo, use a free Cloudflare **quick tunnel** (no Cloudflare account required).
+
+```bash
+# Start delete API + public tunnel
+docker compose --profile tunnel up -d --build
+
+# Read the public HTTPS URL (look for https://….trycloudflare.com)
+docker compose logs -f tunnel
+```
+
+**Reminder:** every time you start or restart the tunnel container, Cloudflare issues a **new** `https://….trycloudflare.com` URL. Update the HTTP action URI(s) in your Power Automate flow to match before testing again — an old hostname will fail.
+
+Use that base URL in Power Automate, for example:
+
+- `GET  https://….trycloudflare.com/health`
+- `POST https://….trycloudflare.com/delete` with `{"employeeId":"1234"}`
+
+Notes:
+
+- The `trycloudflare.com` hostname **changes every time** the tunnel container restarts (or `docker compose --profile tunnel up` recreates it). Always copy the new URL from `docker compose logs tunnel` and paste it into Power Automate.
+- This publishes an **unauthenticated** delete endpoint on the public internet — use only for short demos, then stop it:
+
+```bash
+docker compose --profile tunnel down
+```
+
+For a lasting hostname later, create a named Cloudflare Tunnel (account + token) instead of the quick tunnel — then you will not need to update Power Automate on every restart.
+
+---
+
 ## Other admin commands
 
 ### Force re-upload on next sync (local state only)

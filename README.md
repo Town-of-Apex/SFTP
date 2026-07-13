@@ -31,12 +31,14 @@ MS Form  →  Power Automate  →  Master CSV (OneDrive)
 ```
 main.py              # Manual sync entry point
 scheduler.py         # Scheduled daemon (--run-now for ad-hoc)
-admin.py             # status, preview, replay, reset-external-id
+admin.py             # status, preview, replay, reset-external-id, delete-external-id
+api.py               # HTTP delete API for Power Automate (no auth yet)
 explore_onedrive.py  # IT tool for Graph / drive discovery
 src/
   config.py          # Environment configuration
   graph_client.py    # MS Graph download
   delta.py           # Delta detection and state
+  delete_service.py  # Shared Everbridge delete (CLI + API)
   everbridge/        # Contact transport abstraction (SFTP today, API planned)
   validation.py      # Row validation
   sftp_client.py     # Backward-compatible SFTP upload wrapper
@@ -197,11 +199,22 @@ docker compose exec sftp-uploader uv run python admin.py preview
 docker compose exec sftp-uploader uv run python admin.py delete-external-id 1234
 docker compose exec sftp-uploader uv run python admin.py reset-external-id 12345
 docker compose exec sftp-uploader uv run python admin.py replay sent_files/upload_2026-01-01_10-00-00_abc.csv
+
+# HTTP delete API (Power Automate) — default port 8080
+docker compose up -d --build delete-api
+curl -X DELETE http://localhost:8080/contacts/1234
+curl -X POST http://localhost:8080/delete -H 'Content-Type: application/json' -d '{"employeeId":"1234"}'
+
+# Laptop demo: public HTTPS URL for Power Automate (Cloudflare quick tunnel)
+docker compose --profile tunnel up -d --build
+docker compose logs -f tunnel   # copy https://….trycloudflare.com
+# Then update the Power Automate HTTP action URI(s) to that new URL
+# (quick-tunnel hostname changes on every start/restart)
 ```
 
 `reset-external-id` only clears **local sync state** so a row can re-upload; it does not delete the contact from Everbridge.
 
-`delete-external-id` uploads a delete CSV to Everbridge SFTP `/delete`, purges local state, archives the CSV under `sent_files/`, and sends a Teams notification. Deleted contacts can be restored for 30 days per Everbridge policy.
+`delete-external-id` (CLI) and the `delete-api` service both upload a delete CSV to Everbridge SFTP `/delete`, purge local state, archive under `sent_files/`, and send a Teams notification. Deleted contacts can be restored for 30 days per Everbridge policy. See [docs/OPERATIONS.md](docs/OPERATIONS.md) for Power Automate wiring and the Cloudflare tunnel. Auth is not enabled yet — keep the API private, or only leave the tunnel up for short demos. After each tunnel start/restart, update Power Automate with the new `trycloudflare.com` URL from the logs.
 
 ## Troubleshooting
 
@@ -264,11 +277,12 @@ See [ROADMAP.md](ROADMAP.md) for the full pre-launch checklist, [docs/VALIDATION
 Implemented today:
 
 - **`admin.py delete-external-id`** — SFTP delete via `/delete`, confirmation prompt, local state purge, Teams notification
+- **`api.py` / `delete-api` service** — HTTP `DELETE /contacts/{employeeId}` and `POST /delete` for Power Automate (no auth yet)
 
 Still planned (not implemented yet):
 
 - **Everbridge REST API** as an alternative or supplement to SFTP (`EVERBRIDGE_TRANSPORT=api`)
-- **HR offboarding web UI** — simple internal app to enter an employee External ID and remove their Everbridge contact
+- **Auth on the delete HTTP API** and a fuller **HR offboarding web UI**
 - **OneDrive Jobs folder** — archive sync/delete job CSVs and JSON metadata to `Projects/Emergency Alerts/Jobs/` (see [ROADMAP.md](ROADMAP.md) section 2.4)
 - **Re-onboarding** — returning employees get a new External ID and use the registration Form again
 

@@ -4,23 +4,19 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import sys
-from datetime import datetime
 
 from src.config import load_config
 from src.contacts import contact_name_for_external_id, format_contact_name
-from src.delta import (
-    identify_new_rows,
-    load_master_headers,
-    load_state,
-    purge_external_id_from_state,
-    write_delete_staging_csv,
+from src.delta import identify_new_rows, load_state, purge_external_id_from_state
+from src.delete_service import (
+    DeleteTransportError,
+    MasterUnavailableError,
+    delete_external_id,
+    ensure_master_for_delete,
 )
-from src.everbridge import EverbridgeTransportError, create_transport
-from src.graph_client import download_delegated_master
+from src.everbridge import create_transport
 from src.logging_config import setup_logging
-from src.notifications import send_delete_alert, send_failure_alert
 from src.pipeline import run_sync
 
 
@@ -76,34 +72,6 @@ def cmd_reset_external_id(config, external_id: str) -> None:
     )
 
 
-def _ensure_master_for_delete(config) -> None:
-    if os.path.exists(config.local_master_copy):
-        return
-
-    if config.skip_graph_download:
-        print(
-            f"Master CSV not found at {config.local_master_copy}. "
-            "Run a sync first or disable SKIP_GRAPH_DOWNLOAD to download from OneDrive."
-        )
-        sys.exit(1)
-
-    if not download_delegated_master(config):
-        print(
-            f"Could not download master CSV to {config.local_master_copy}. "
-            "Run a sync first or check Graph credentials."
-        )
-        sys.exit(1)
-
-
-def _archive_delete_csv(config, external_id: str) -> str:
-    os.makedirs(config.sent_files_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    archive_name = f"delete_{timestamp}_{external_id}.csv"
-    archive_path = os.path.join(config.sent_files_dir, archive_name)
-    shutil.copy(config.delete_staging_csv, archive_path)
-    return archive_path
-
-
 def cmd_delete_external_id(
     config,
     external_id: str,
@@ -116,19 +84,27 @@ def cmd_delete_external_id(
         print("External ID is required.")
         sys.exit(1)
 
-    _ensure_master_for_delete(config)
-    contact_name = contact_name_for_external_id(config, external_id)
     remote_path = (
         f"{config.sftp_remote_delete_dir}/{config.sftp_remote_delete_filename}"
     )
+
+    try:
+        ensure_master_for_delete(config)
+        contact_name = contact_name_for_external_id(config, external_id)
+    except MasterUnavailableError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
 
     print(f"Contact: {contact_name}")
     print(f"External ID: {external_id}")
     print(f"SFTP target: {config.sftp_host}{remote_path}")
 
     if dry_run:
-        headers = load_master_headers(config)
-        write_delete_staging_csv(config, headers, external_id)
+        try:
+            result = delete_external_id(config, external_id, dry_run=True, notify=False)
+        except (MasterUnavailableError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
         print(f"Dry run: delete CSV written to {config.delete_staging_csv}")
         print("No SFTP upload performed.")
         return
@@ -146,34 +122,19 @@ def cmd_delete_external_id(
             sys.exit(1)
 
     try:
-        create_transport(config).delete_contact(external_id)
-        archive_path = _archive_delete_csv(config, external_id)
-        removed = purge_external_id_from_state(config, external_id)
-        print(
-            f"Deleted contact '{contact_name}' (External ID {external_id}). "
-            f"Removed {removed} local state entries."
-        )
-        print(f"Archived delete CSV to {archive_path}")
-        send_delete_alert(
-            config,
-            "success",
-            {
-                "contact": contact_name,
-                "archive": archive_path,
-            },
-        )
-    except EverbridgeTransportError as exc:
-        send_failure_alert(
-            config,
-            "sftp",
-            str(exc),
-            {
-                "operation": "delete",
-                "contact": contact_name,
-            },
-        )
+        result = delete_external_id(config, external_id)
+    except MasterUnavailableError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    except DeleteTransportError as exc:
         print(f"Delete failed: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    print(
+        f"Deleted contact '{result.contact_name}' (External ID {result.employee_id}). "
+        f"Removed {result.state_entries_removed} local state entries."
+    )
+    print(f"Archived delete CSV to {result.archive_path}")
 
 
 def main() -> None:

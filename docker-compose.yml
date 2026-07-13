@@ -4,7 +4,8 @@ services:
     container_name: sftp-everbridge-scheduler
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     volumes:
       - ./Apex.key:/app/Apex.key
       - ./sync_state.json:/app/sync_state.json
@@ -22,3 +23,45 @@ services:
     #   docker compose exec sftp-uploader uv run python scheduler.py --run-now
     #   docker compose exec sftp-uploader uv run python admin.py preview
     #   docker compose exec sftp-uploader uv run python explore_onedrive.py
+
+  # Power Automate / Teams → HTTP delete (no auth yet — keep private or tunnel only while testing)
+  delete-api:
+    build: .
+    container_name: sftp-everbridge-delete-api
+    restart: unless-stopped
+    command: ["uv", "run", "python", "api.py"]
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${DELETE_API_PORT:-8080}:8080"
+    volumes:
+      - ./Apex.key:/app/Apex.key
+      - ./sync_state.json:/app/sync_state.json
+      - ./sent_files:/app/sent_files
+      - ./failed_uploads:/app/failed_uploads
+      - ./ms_graph_token_cache.json:/app/ms_graph_token_cache.json
+    environment:
+      - TZ=America/New_York
+      - DELETE_API_HOST=0.0.0.0
+      - DELETE_API_PORT=8080
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Free Cloudflare quick tunnel (no account). Opt-in: docker compose --profile tunnel up -d
+  # Public URL prints in logs: docker compose logs -f tunnel
+  # After every start/restart: update Power Automate HTTP URIs to the new trycloudflare.com URL
+  # Tear down when done — this exposes an unauthenticated delete API.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: sftp-everbridge-tunnel
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://delete-api:8080
+    depends_on:
+      delete-api:
+        condition: service_healthy
