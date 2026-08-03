@@ -18,14 +18,20 @@ from src.contacts import (
 )
 from src.delta import (
     commit_state_entries,
-    get_row_signature,
     identify_new_rows,
+    write_delete_staging_csv,
     write_staging_csv,
 )
 from src.everbridge import EverbridgeTransportError, create_transport
 from src.graph_client import download_delegated_master
 from src.notifications import send_failure_alert, send_success_alert
-from src.validation import ValidationIssue, partition_rows, validate_row, write_rejected_rows
+from src.validation import (
+    ValidationIssue,
+    partition_rows,
+    validate_opt_out_row,
+    validate_row,
+    write_rejected_rows,
+)
 
 logger = logging.getLogger("everbridge-sync.pipeline")
 
@@ -36,6 +42,7 @@ FailureType = Literal["auth", "download", "filter", "validation", "sftp", "unkno
 class SyncResult:
     sync_run_id: str
     rows_uploaded: int
+    rows_deleted: int
     rows_rejected: int
     status: Literal["success", "no_action", "failed"]
 
@@ -114,6 +121,15 @@ def _archive_upload(config: Config, sync_run_id: str) -> str:
     return archive_path
 
 
+def _archive_delete(config: Config, sync_run_id: str) -> str:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    archive_name = f"delete_{timestamp}_{sync_run_id[:8]}.csv"
+    archive_path = os.path.join(config.sent_files_dir, archive_name)
+    shutil.move(config.delete_staging_csv, archive_path)
+    logger.info("Archived delete to: %s", archive_path)
+    return archive_path
+
+
 def _archive_failure(
     config: Config,
     sync_run_id: str,
@@ -121,7 +137,15 @@ def _archive_failure(
     message: str,
     row_count: int,
 ) -> str | None:
-    if not os.path.exists(config.upload_staging_csv):
+    staging_candidates = [
+        config.upload_staging_csv,
+        config.delete_staging_csv,
+    ]
+    staging_path = next(
+        (path for path in staging_candidates if os.path.exists(path)),
+        None,
+    )
+    if staging_path is None:
         return None
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -129,7 +153,7 @@ def _archive_failure(
     csv_path = os.path.join(config.failed_uploads_dir, f"{base_name}.csv")
     meta_path = os.path.join(config.failed_uploads_dir, f"{base_name}.json")
 
-    shutil.copy(config.upload_staging_csv, csv_path)
+    shutil.copy(staging_path, csv_path)
     with open(meta_path, "w", encoding="utf-8") as handle:
         json.dump(
             {
@@ -148,26 +172,6 @@ def _archive_failure(
     return csv_path
 
 
-def _collect_rejections(
-    rows: list[dict[str, str]],
-) -> tuple[list[dict[str, str]], list[ValidationIssue]]:
-    rejected_rows: list[dict[str, str]] = []
-    issues: list[ValidationIssue] = []
-
-    for row in rows:
-        row_issues = validate_row(row)
-        if row_issues:
-            rejected_rows.append(row)
-            issues.append(
-                ValidationIssue(
-                    external_id=(row.get("External ID") or "").strip(),
-                    reason="; ".join(row_issues),
-                )
-            )
-
-    return rejected_rows, issues
-
-
 def _handle_failure(
     config: Config,
     sync_run_id: str,
@@ -177,6 +181,7 @@ def _handle_failure(
     rejected_count: int,
     *,
     valid_rows: list[dict[str, str]] | None = None,
+    deleted_rows: list[dict[str, str]] | None = None,
     rejected_rows: list[dict[str, str]] | None = None,
     rejection_issues: list[ValidationIssue] | None = None,
 ) -> SyncResult:
@@ -191,6 +196,7 @@ def _handle_failure(
             valid_rows or [],
             rejected_rows or [],
             rejection_issues or [],
+            deleted_rows=deleted_rows,
         )
     )
     send_failure_alert(
@@ -203,9 +209,29 @@ def _handle_failure(
     return SyncResult(
         sync_run_id=sync_run_id,
         rows_uploaded=0,
+        rows_deleted=0,
         rows_rejected=rejected_count,
         status="failed",
     )
+
+
+def _filter_pending_for_valid(
+    pending_entries,
+    *,
+    valid_opt_ins: list[dict[str, str]],
+    valid_opt_outs: list[dict[str, str]],
+):
+    valid_external_ids = {
+        (row.get("External ID") or "").strip()
+        for row in valid_opt_ins + valid_opt_outs
+        if (row.get("External ID") or "").strip()
+    }
+    # Blank-ID rows are never committed on success (they fail validation).
+    return [
+        entry
+        for entry in pending_entries
+        if entry.external_id and entry.external_id in valid_external_ids
+    ]
 
 
 def run_sync(config: Config | None = None) -> SyncResult:
@@ -214,9 +240,11 @@ def run_sync(config: Config | None = None) -> SyncResult:
     _ensure_directories(config)
 
     logger.info("--- SYNC START [%s] ---", sync_run_id)
-    row_count = 0
+    upload_count = 0
+    delete_count = 0
     rejected_count = 0
-    valid_rows: list[dict[str, str]] = []
+    valid_opt_ins: list[dict[str, str]] = []
+    valid_opt_outs: list[dict[str, str]] = []
     rejected_rows: list[dict[str, str]] = []
     rejection_issues: list[ValidationIssue] = []
 
@@ -224,11 +252,12 @@ def run_sync(config: Config | None = None) -> SyncResult:
         _download_master(config)
 
         delta = identify_new_rows(config, sync_run_id)
-        if not delta.new_rows:
-            logger.info("Sync complete: no new or updated rows.")
+        if delta.actionable_count == 0:
+            logger.info("Sync complete: no new opt-ins or opt-outs.")
             result = SyncResult(
                 sync_run_id=sync_run_id,
                 rows_uploaded=0,
+                rows_deleted=0,
                 rows_rejected=0,
                 status="no_action",
             )
@@ -237,18 +266,40 @@ def run_sync(config: Config | None = None) -> SyncResult:
                 "no_action",
                 {
                     "sync_run_id": sync_run_id,
-                    "message": "No new or updated rows.",
+                    "message": "No new opt-ins or opt-outs.",
                 },
             )
             return result
 
-        valid_rows, _ = partition_rows(delta.new_rows)
-        rejected_rows, rejection_issues = _collect_rejections(delta.new_rows)
+        valid_opt_ins, opt_in_issues = partition_rows(
+            delta.opt_in_rows, validator=validate_row
+        )
+        valid_opt_outs, opt_out_issues = partition_rows(
+            delta.opt_out_rows, validator=validate_opt_out_row
+        )
+
+        valid_opt_in_ids = {id(row) for row in valid_opt_ins}
+        valid_opt_out_ids = {id(row) for row in valid_opt_outs}
+        rejected_rows = [
+            row for row in delta.opt_in_rows if id(row) not in valid_opt_in_ids
+        ] + [
+            row for row in delta.opt_out_rows if id(row) not in valid_opt_out_ids
+        ] + list(delta.invalid_preference_rows)
+
+        rejection_issues = list(opt_in_issues) + list(opt_out_issues)
+        for row in delta.invalid_preference_rows:
+            rejection_issues.append(
+                ValidationIssue(
+                    external_id=(row.get("External ID") or "").strip(),
+                    reason="Opted In must be TRUE or FALSE",
+                )
+            )
+
         if rejected_rows:
             write_rejected_rows(config, delta.headers, rejected_rows, rejection_issues)
             rejected_count = len(rejected_rows)
 
-        if not valid_rows:
+        if not valid_opt_ins and not valid_opt_outs:
             return _handle_failure(
                 config,
                 sync_run_id,
@@ -260,43 +311,60 @@ def run_sync(config: Config | None = None) -> SyncResult:
                 rejection_issues=rejection_issues,
             )
 
-        valid_signatures = {get_row_signature(row) for row in valid_rows}
-        pending_entries = [
-            entry
-            for entry in delta.pending_entries
-            if entry.signature in valid_signatures
-        ]
-
-        write_staging_csv(config, delta.headers, valid_rows)
-        row_count = len(valid_rows)
+        pending_entries = _filter_pending_for_valid(
+            delta.pending_entries,
+            valid_opt_ins=valid_opt_ins,
+            valid_opt_outs=valid_opt_outs,
+        )
 
         transport = create_transport(config)
-        transport.upsert_batch(config.upload_staging_csv)
+
+        if valid_opt_ins:
+            write_staging_csv(config, delta.headers, valid_opt_ins)
+            upload_count = len(valid_opt_ins)
+            transport.upsert_batch(config.upload_staging_csv)
+
+        if valid_opt_outs:
+            delete_ids = [
+                (row.get("External ID") or "").strip() for row in valid_opt_outs
+            ]
+            write_delete_staging_csv(config, delta.headers, delete_ids)
+            delete_count = len(valid_opt_outs)
+            transport.delete_batch(config.delete_staging_csv)
+
         commit_state_entries(config, pending_entries)
-        _archive_upload(config, sync_run_id)
+
+        if valid_opt_ins and os.path.exists(config.upload_staging_csv):
+            _archive_upload(config, sync_run_id)
+        if valid_opt_outs and os.path.exists(config.delete_staging_csv):
+            _archive_delete(config, sync_run_id)
 
         logger.info(
-            "--- SYNC END [%s]: uploaded %s row(s), rejected %s ---",
+            "--- SYNC END [%s]: uploaded %s, deleted %s, rejected %s ---",
             sync_run_id,
-            row_count,
+            upload_count,
+            delete_count,
             rejected_count,
         )
         result = SyncResult(
             sync_run_id=sync_run_id,
-            rows_uploaded=row_count,
+            rows_uploaded=upload_count,
+            rows_deleted=delete_count,
             rows_rejected=rejected_count,
             status="success",
         )
         success_context: dict[str, str | int] = {
             "sync_run_id": sync_run_id,
-            "rows_uploaded": row_count,
+            "rows_uploaded": upload_count,
+            "rows_deleted": delete_count,
             "rows_rejected": rejected_count,
         }
         success_context.update(
             build_sync_success_contact_context(
-                valid_rows,
+                valid_opt_ins,
                 rejected_rows,
                 rejection_issues,
+                deleted_rows=valid_opt_outs,
             )
         )
         send_success_alert(
@@ -312,9 +380,10 @@ def run_sync(config: Config | None = None) -> SyncResult:
             sync_run_id,
             exc.failure_type,
             exc.message,
-            row_count,
+            upload_count + delete_count,
             rejected_count,
-            valid_rows=valid_rows,
+            valid_rows=valid_opt_ins,
+            deleted_rows=valid_opt_outs,
             rejected_rows=rejected_rows,
             rejection_issues=rejection_issues,
         )
@@ -325,9 +394,10 @@ def run_sync(config: Config | None = None) -> SyncResult:
             sync_run_id,
             "sftp",
             str(exc),
-            row_count,
+            upload_count + delete_count,
             rejected_count,
-            valid_rows=valid_rows,
+            valid_rows=valid_opt_ins,
+            deleted_rows=valid_opt_outs,
             rejected_rows=rejected_rows,
             rejection_issues=rejection_issues,
         )
@@ -335,13 +405,14 @@ def run_sync(config: Config | None = None) -> SyncResult:
     except Exception as exc:
         failure_context: dict[str, str | int] = {
             "sync_run_id": sync_run_id,
-            "row_count": row_count,
+            "row_count": upload_count + delete_count,
         }
         failure_context.update(
             build_sync_failure_contact_context(
-                valid_rows,
+                valid_opt_ins,
                 rejected_rows,
                 rejection_issues,
+                deleted_rows=valid_opt_outs,
             )
         )
         send_failure_alert(

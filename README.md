@@ -9,20 +9,28 @@ MS Form  →  Power Automate  →  Master CSV (OneDrive)
                                       ↓
                          This app (Docker, scheduled)
                                       ↓
-                         Everbridge SFTP (/update)
+                    ┌─────────────────┴─────────────────┐
+                    │                                   │
+              Opted In = TRUE                     Opted In = FALSE
+                    │                                   │
+              Everbridge SFTP                     Everbridge SFTP
+              (/update)                           (/delete)
 ```
 
-1. Staff submit the Microsoft Form to opt in (contact info) or opt out (handled upstream — opt-outs never reach the master CSV).
-2. Power Automate appends each submission as a new row to the master CSV on OneDrive.
-3. This application runs on a schedule, downloads the master CSV, detects new/changed rows, and uploads only the delta to Everbridge.
-4. Everbridge upserts contacts by **External ID**.
+1. Staff authenticate and submit the Microsoft Form (opt in or opt out). Every submission — including opt-outs — is appended to the master CSV with the submitter's External ID.
+2. Power Automate appends each submission as a new row, including analytics metadata columns after `END` (`Opted In`, `Submitter Email`, `Submitter Department`, `Submission Datetime`).
+3. This application runs on a schedule, downloads the master CSV, uses **last-write-wins per External ID**, and uploads only the delta:
+   - `Opted In=TRUE` → UPDATE file to Everbridge `/update`
+   - `Opted In=FALSE` → DELETE file to Everbridge `/delete`
+4. Everbridge upserts or removes contacts by **External ID**. After success, all current master-row signatures for that ID are sealed so older opt-ins cannot resurrect a contact.
 
 ## Features
 
-- **Incremental sync** — SHA256 row signatures; only new or changed rows are uploaded
-- **Safe state commits** — `sync_state.json` is updated only after a successful SFTP upload
+- **Incremental sync** — SHA256 row signatures; only new or changed latest rows per External ID are actioned
+- **Opt-in and opt-out** — same sync run builds UPDATE and DELETE batches from `Opted In`
+- **Safe state commits** — `sync_state.json` is updated only after successful SFTP upload(s); form opt-outs seal prior signatures instead of purging
 - **OneDrive via MS Graph** — delegated auth with MSAL token cache; download by file ID with path fallback
-- **Validation** — rejects bad rows to `rejected_rows.csv` without blocking valid ones
+- **Validation** — rejects bad rows to `rejected_rows.csv` without blocking valid ones (opt-outs require External ID only)
 - **Failure handling** — failed batches preserved in `failed_uploads/`; Teams/email alerts
 - **Docker deployment** — scheduled via APScheduler; manual and admin CLI tools included
 

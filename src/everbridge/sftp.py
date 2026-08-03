@@ -94,6 +94,13 @@ class SftpTransport:
         )
         self._upload_file(staging_csv_path, remote_path)
 
+    def delete_batch(self, staging_csv_path: str) -> None:
+        remote_path = (
+            f"{self._config.sftp_remote_delete_dir}/"
+            f"{self._config.sftp_remote_delete_filename}"
+        )
+        self._upload_file(staging_csv_path, remote_path)
+
     def delete_contact(self, external_id: str) -> bool:
         if not external_id.strip():
             raise EverbridgeTransportError("External ID is required for delete.")
@@ -109,9 +116,5 @@ class SftpTransport:
             raise EverbridgeTransportError(str(exc)) from exc
 
         write_delete_staging_csv(self._config, headers, external_id.strip())
-        remote_path = (
-            f"{self._config.sftp_remote_delete_dir}/"
-            f"{self._config.sftp_remote_delete_filename}"
-        )
-        self._upload_file(self._config.delete_staging_csv, remote_path)
+        self.delete_batch(self._config.delete_staging_csv)
         return True

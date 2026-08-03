@@ -22,9 +22,10 @@ class ContactTransport(Protocol):
         """Upload a staged CSV of contact rows (upserts by External ID)."""
         ...
 
-    def delete_contact(self, external_id: str) -> bool:
-        """Remove a contact by External ID. Returns True if deleted or not found.
+    def delete_batch(self, staging_csv_path: str) -> None:
+        """Upload a staged sparse CSV of External IDs to remove."""
+        ...
 
-  Not implemented for SFTP yet — reserved for API or SFTP delete-file format.
-  """
+    def delete_contact(self, external_id: str) -> bool:
+        """Remove a contact by External ID. Returns True if deleted or not found."""
         ...

@@ -22,15 +22,18 @@ from src.pipeline import run_sync
 
 def cmd_status(config) -> None:
     state, signatures, external_ids = load_state(config)
-    pending = 0
+    pending_upserts = 0
+    pending_deletes = 0
     if os.path.exists(config.local_master_copy):
         delta = identify_new_rows(config, "preview")
-        pending = len(delta.new_rows)
+        pending_upserts = len(delta.opt_in_rows)
+        pending_deletes = len(delta.opt_out_rows)
 
     print(f"State file: {config.state_file}")
     print(f"Processed signatures: {len(signatures)}")
     print(f"Known external IDs: {len(external_ids)}")
-    print(f"Pending delta rows: {pending}")
+    print(f"Pending upserts: {pending_upserts}")
+    print(f"Pending deletes: {pending_deletes}")
     if state:
         last = max(state, key=lambda entry: entry.get("processed_at", ""))
         print(f"Last processed at: {last.get('processed_at', 'unknown')}")
@@ -43,13 +46,26 @@ def cmd_preview(config) -> None:
 
     delta = identify_new_rows(config, "preview")
     print(
-        f"Would upload {len(delta.new_rows)} row(s): "
+        f"Would upsert {len(delta.opt_in_rows)} row(s): "
         f"{delta.new_count} new, {delta.update_count} update(s)."
     )
-    for row in delta.new_rows[:20]:
-        print(f"  - {format_contact_name(row)}")
-    if len(delta.new_rows) > 20:
-        print(f"  ... and {len(delta.new_rows) - 20} more")
+    for row in delta.opt_in_rows[:20]:
+        print(f"  + {format_contact_name(row)}")
+    if len(delta.opt_in_rows) > 20:
+        print(f"  ... and {len(delta.opt_in_rows) - 20} more upserts")
+
+    print(f"Would delete {len(delta.opt_out_rows)} contact(s).")
+    for row in delta.opt_out_rows[:20]:
+        external_id = (row.get("External ID") or "").strip() or "?"
+        print(f"  - {format_contact_name(row)} ({external_id})")
+    if len(delta.opt_out_rows) > 20:
+        print(f"  ... and {len(delta.opt_out_rows) - 20} more deletes")
+
+    if delta.invalid_preference_rows:
+        print(
+            f"Would reject {len(delta.invalid_preference_rows)} row(s) "
+            "with invalid Opted In values."
+        )
 
 
 def cmd_replay(config, archive_path: str) -> None:
@@ -183,7 +199,7 @@ def main() -> None:
         result = run_sync(config)
         print(
             f"Sync {result.status}: uploaded={result.rows_uploaded}, "
-            f"rejected={result.rows_rejected}"
+            f"deleted={result.rows_deleted}, rejected={result.rows_rejected}"
         )
     elif args.command == "replay":
         cmd_replay(config, args.archive_path)

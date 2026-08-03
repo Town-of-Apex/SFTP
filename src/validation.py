@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from src.config import Config
@@ -33,6 +34,7 @@ def _has_contact_method(row: dict[str, str]) -> bool:
 
 
 def validate_row(row: dict[str, str]) -> list[str]:
+    """Validate an opt-in / upsert row."""
     issues: list[str] = []
     external_id = (row.get("External ID") or "").strip()
     first_name = (row.get("First Name") or "").strip()
@@ -58,14 +60,23 @@ def validate_row(row: dict[str, str]) -> list[str]:
     return issues
 
 
+def validate_opt_out_row(row: dict[str, str]) -> list[str]:
+    """Validate an opt-out / delete row (External ID only)."""
+    if not (row.get("External ID") or "").strip():
+        return ["Missing External ID"]
+    return []
+
+
 def partition_rows(
     rows: list[dict[str, str]],
+    *,
+    validator: Callable[[dict[str, str]], list[str]] = validate_row,
 ) -> tuple[list[dict[str, str]], list[ValidationIssue]]:
     valid_rows: list[dict[str, str]] = []
     invalid_rows: list[ValidationIssue] = []
 
     for row in rows:
-        issues = validate_row(row)
+        issues = validator(row)
         if issues:
             invalid_rows.append(
                 ValidationIssue(

@@ -25,15 +25,17 @@ Use this while waiting for Microsoft credentials to validate Everbridge SFTP and
 
 ## CSV and Data Quality
 
-- [ ] Download the master CSV manually from OneDrive and confirm headers match the Everbridge template (160+ columns, `END` terminator)
+- [ ] Download the master CSV manually from OneDrive and confirm headers match the Everbridge template (160+ columns, `END` terminator) plus analytics metadata after `END`: `Opted In`, `Submitter Email`, `Submitter Department`, `Submission Datetime`
 - [ ] Confirm `External ID` is a stable employee identifier (not name-based)
-- [ ] Confirm Power Automate writes opt-outs **only** outside the master CSV (opt-ins only in master)
-- [ ] Confirm re-submissions append a new row with the same `External ID` and updated fields
+- [ ] Confirm Power Automate appends **both** opt-ins and opt-outs to the master CSV, with `Opted In` set to `TRUE` or `FALSE`
+- [ ] Confirm re-submissions append a new row with the same `External ID` (last-write-wins)
 
 ## Functional Tests
 
 - [ ] **New person**: Submit a test Form entry → run `uv run python main.py` (or `scheduler.py --run-now`) → verify row appears in Everbridge
 - [ ] **Update existing person**: Re-submit with changed phone/email → verify only the delta uploads and Everbridge upserts by `External ID`
+- [ ] **Opt out**: Re-submit with `Opted In=FALSE` → verify DELETE upload and contact removed from Everbridge; confirm a later sync does **not** re-add them from the old opt-in row
+- [ ] **Re-opt in**: After opt-out, submit again with `Opted In=TRUE` → verify UPDATE upload restores the contact
 - [ ] **No changes**: Run sync again with no new Form submissions → verify "no action" and no duplicate upload
 - [ ] **Invalid row**: Temporarily add a row missing `External ID` to master → verify it lands in `rejected_rows.csv` and valid rows still upload
 - [ ] **SFTP failure**: Simulate failure (bad key or network block) → verify `failed_uploads/` preserved, alert sent, and **state not committed** → fix and re-run → same rows upload

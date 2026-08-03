@@ -156,10 +156,10 @@ Everbridge **upserts by External ID**. Opt-outs are filtered upstream in Power A
 
 | Owner          | Task                                                                     | Status |
 | -------------- | ------------------------------------------------------------------------ | ------ |
-| Power Automate | Master CSV is Everbridge-format; opt-outs never in master                | [ ]    |
-| Power Automate | `External ID` = stable employee ID; re-submissions append new rows       | [ ]    |
+| Power Automate | Master CSV is Everbridge-format + metadata after `END`; append opt-ins and opt-outs | [ ]    |
+| Power Automate | `External ID` = stable employee ID; re-submissions append new rows; `Opted In` = TRUE/FALSE | [ ]    |
 | IT / Entra     | App registration, `Files.Read.All`, admin consent, secret lifecycle      | [ ]    |
-| Everbridge     | SFTP key active, `/update` path correct, upsert by External ID verified  | [ ]    |
+| Everbridge     | SFTP key active; `/update` and `/delete` paths verified                  | [ ]    |
 | Comms / HR     | Form wording, opt-out affirmation, rollout timing                        | [ ]    |
 | Host / Ops     | Docker host, outbound port 22, persistent volumes for state and archives | [ ]    |
 

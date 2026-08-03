@@ -24,8 +24,9 @@ def job() -> None:
         logger.error("Scheduled task failed (run_id=%s).", result.sync_run_id)
     elif result.status == "success":
         logger.info(
-            "Scheduled task completed: uploaded %s row(s).",
+            "Scheduled task completed: uploaded %s, deleted %s.",
             result.rows_uploaded,
+            result.rows_deleted,
         )
     else:
         logger.info("Scheduled task completed: no action required.")

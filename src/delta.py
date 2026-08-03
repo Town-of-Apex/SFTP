@@ -6,12 +6,14 @@ import csv
 import hashlib
 import json
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from src.config import Config
 from src.csv_utils import normalize_csv_fieldnames, normalize_csv_row
+from src.metadata import everbridge_headers, has_opted_in_column, parse_opted_in
 
 logger = logging.getLogger("everbridge-sync.delta")
 
@@ -27,11 +29,22 @@ class PendingStateEntry:
 
 @dataclass
 class DeltaResult:
-    new_rows: list[dict[str, str]]
     headers: list[str]
+    opt_in_rows: list[dict[str, str]]
+    opt_out_rows: list[dict[str, str]]
+    invalid_preference_rows: list[dict[str, str]]
     pending_entries: list[PendingStateEntry]
     new_count: int
     update_count: int
+    delete_count: int
+
+    @property
+    def actionable_count(self) -> int:
+        return (
+            len(self.opt_in_rows)
+            + len(self.opt_out_rows)
+            + len(self.invalid_preference_rows)
+        )
 
 
 def get_row_signature(row: dict[str, Any]) -> str:
@@ -72,66 +85,138 @@ def load_state(config: Config) -> tuple[list[dict[str, Any]], set[str], set[str]
 
 
 def identify_new_rows(config: Config, upload_batch_id: str) -> DeltaResult:
+    """Detect actionable deltas using last-write-wins per External ID.
+
+    For each External ID, only the latest master row is considered for UPDATE or
+    DELETE. After a successful sync, callers commit pending entries that seal
+    *all* current master signatures for each processed External ID so older
+    opt-in rows cannot resurrect a contact after an opt-out.
+    """
     if not config.local_master_copy:
         raise FileNotFoundError("Local master copy path is not configured.")
 
-    processed_state, processed_signatures, known_external_ids = load_state(config)
-
-    new_rows: list[dict[str, str]] = []
-    pending_entries: list[PendingStateEntry] = []
-    new_count = 0
-    update_count = 0
+    _, processed_signatures, known_external_ids = load_state(config)
 
     with open(config.local_master_copy, encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         headers = normalize_csv_fieldnames(reader.fieldnames)
+        rows = [normalize_csv_row(raw_row, headers) for raw_row in reader]
 
-        for raw_row in reader:
-            row = normalize_csv_row(raw_row, headers)
-            signature = get_row_signature(row)
-            if signature in processed_signatures:
+    column_present = has_opted_in_column(headers)
+    processed_at = datetime.now().isoformat()
+
+    signatures_by_id: dict[str, list[str]] = defaultdict(list)
+    last_index_by_id: dict[str, int] = {}
+    row_signatures: list[str] = []
+
+    for index, row in enumerate(rows):
+        signature = get_row_signature(row)
+        row_signatures.append(signature)
+        external_id = _external_id_from_row(row)
+        if external_id:
+            signatures_by_id[external_id].append(signature)
+            last_index_by_id[external_id] = index
+
+    opt_in_rows: list[dict[str, str]] = []
+    opt_out_rows: list[dict[str, str]] = []
+    invalid_preference_rows: list[dict[str, str]] = []
+    pending_entries: list[PendingStateEntry] = []
+    pending_signatures: set[str] = set()
+    new_count = 0
+    update_count = 0
+    delete_count = 0
+
+    def _queue_seal_entries(external_id: str, *, is_update: bool) -> None:
+        for signature in signatures_by_id[external_id]:
+            if signature in processed_signatures or signature in pending_signatures:
                 continue
-
-            external_id = _external_id_from_row(row)
-            is_update = bool(external_id and external_id in known_external_ids)
-            if is_update:
-                update_count += 1
-            else:
-                new_count += 1
-                if external_id:
-                    known_external_ids.add(external_id)
-
-            new_rows.append(row)
             pending_entries.append(
                 PendingStateEntry(
                     signature=signature,
                     external_id=external_id,
-                    processed_at=datetime.now().isoformat(),
+                    processed_at=processed_at,
                     upload_batch_id=upload_batch_id,
                     is_update=is_update,
                 )
             )
-            processed_signatures.add(signature)
+            pending_signatures.add(signature)
+
+    for index, row in enumerate(rows):
+        signature = row_signatures[index]
+        external_id = _external_id_from_row(row)
+
+        if external_id:
+            if last_index_by_id[external_id] != index:
+                continue
+            if signature in processed_signatures:
+                continue
+        else:
+            if signature in processed_signatures:
+                continue
+
+        opted_in = parse_opted_in(row, column_present=column_present)
+        if opted_in is None:
+            invalid_preference_rows.append(row)
+            continue
+
+        if external_id:
+            is_update = external_id in known_external_ids
+            if opted_in:
+                opt_in_rows.append(row)
+                if is_update:
+                    update_count += 1
+                else:
+                    new_count += 1
+                    known_external_ids.add(external_id)
+            else:
+                opt_out_rows.append(row)
+                delete_count += 1
+            _queue_seal_entries(external_id, is_update=is_update and opted_in)
+        else:
+            # Blank External ID: surface for validation rejection; no seal group.
+            if opted_in:
+                opt_in_rows.append(row)
+                new_count += 1
+            else:
+                opt_out_rows.append(row)
+                delete_count += 1
+            if signature not in pending_signatures:
+                pending_entries.append(
+                    PendingStateEntry(
+                        signature=signature,
+                        external_id="",
+                        processed_at=processed_at,
+                        upload_batch_id=upload_batch_id,
+                        is_update=False,
+                    )
+                )
+                pending_signatures.add(signature)
 
     logger.info(
-        "Identified %s delta row(s): %s new, %s update(s).",
-        len(new_rows),
+        "Identified %s actionable row(s): %s new, %s update(s), %s delete(s), "
+        "%s invalid Opted In.",
+        len(opt_in_rows) + len(opt_out_rows) + len(invalid_preference_rows),
         new_count,
         update_count,
+        delete_count,
+        len(invalid_preference_rows),
     )
     return DeltaResult(
-        new_rows=new_rows,
         headers=headers,
+        opt_in_rows=opt_in_rows,
+        opt_out_rows=opt_out_rows,
+        invalid_preference_rows=invalid_preference_rows,
         pending_entries=pending_entries,
         new_count=new_count,
         update_count=update_count,
+        delete_count=delete_count,
     )
 
 
 def write_staging_csv(
     config: Config, headers: list[str], rows: list[dict[str, str]]
 ) -> None:
-    clean_headers = normalize_csv_fieldnames(headers)
+    clean_headers = everbridge_headers(normalize_csv_fieldnames(headers))
     clean_rows = [normalize_csv_row(row, clean_headers) for row in rows]
     with open(config.upload_staging_csv, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -156,14 +241,18 @@ def load_master_headers(config: Config) -> list[str]:
 def write_delete_staging_csv(
     config: Config,
     headers: list[str],
-    external_id: str,
+    external_ids: str | list[str],
 ) -> None:
-    """Write a sparse delete CSV with only External ID populated."""
-    clean_headers = normalize_csv_fieldnames(headers)
-    row = {header: "" for header in clean_headers}
+    """Write a sparse delete CSV with only External ID populated (one or more rows)."""
+    if isinstance(external_ids, str):
+        ids = [external_ids]
+    else:
+        ids = list(external_ids)
+
+    clean_headers = everbridge_headers(normalize_csv_fieldnames(headers))
     if "External ID" not in clean_headers:
         raise ValueError("Master CSV headers do not include 'External ID'.")
-    row["External ID"] = external_id
+
     with open(config.delete_staging_csv, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
@@ -171,7 +260,10 @@ def write_delete_staging_csv(
             extrasaction="ignore",
         )
         writer.writeheader()
-        writer.writerow(row)
+        for external_id in ids:
+            row = {header: "" for header in clean_headers}
+            row["External ID"] = external_id
+            writer.writerow(row)
 
 
 def commit_state_entries(
@@ -200,8 +292,8 @@ def commit_state_entries(
 def purge_external_id_from_state(config: Config, external_id: str) -> int:
     """Remove all sync state entries for an External ID.
 
-    Used by admin reset today; will also be called after Everbridge contact
-    deletion during HR offboarding. See docs/FUTURE_ARCHITECTURE.md.
+    Used by admin reset and on-demand HR delete. Form opt-outs in the scheduled
+    sync seal signatures instead of purging, so stale opt-in rows cannot re-upload.
     """
     state, _, _ = load_state(config)
     filtered = [entry for entry in state if entry.get("external_id") != external_id]

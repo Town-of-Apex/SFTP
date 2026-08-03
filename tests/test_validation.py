@@ -1,6 +1,6 @@
 """Tests for CSV validation."""
 
-from src.validation import partition_rows, validate_row
+from src.validation import partition_rows, validate_opt_out_row, validate_row
 
 
 def test_valid_row_passes():
@@ -53,5 +53,20 @@ def test_partition_rows_splits_valid_and_invalid():
         },
     ]
     valid, invalid = partition_rows(rows)
+    assert len(valid) == 1
+    assert len(invalid) == 1
+
+
+def test_opt_out_requires_only_external_id():
+    assert validate_opt_out_row({"External ID": "100"}) == []
+    assert validate_opt_out_row({"External ID": ""}) == ["Missing External ID"]
+
+
+def test_partition_rows_supports_opt_out_validator():
+    rows = [
+        {"External ID": "1"},
+        {"External ID": ""},
+    ]
+    valid, invalid = partition_rows(rows, validator=validate_opt_out_row)
     assert len(valid) == 1
     assert len(invalid) == 1

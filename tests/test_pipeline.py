@@ -29,7 +29,7 @@ def make_config(tmp_path: Path) -> Config:
         sftp_remote_filename="upload.csv",
         sftp_remote_delete_dir="/delete",
         sftp_remote_delete_filename="upload.csv",
-        delete_staging_csv="delete.csv",
+        delete_staging_csv=str(tmp_path / "delete.csv"),
         state_file=str(tmp_path / "sync_state.json"),
         local_master_copy=str(tmp_path / "master.csv"),
         upload_staging_csv=str(tmp_path / "staging.csv"),
@@ -123,8 +123,53 @@ def test_run_sync_success_commits_state(tmp_path):
         result = run_sync(config)
 
     assert result.status == "success"
+    assert result.rows_deleted == 0
     assert Path(config.state_file).exists()
     assert not Path(config.upload_staging_csv).exists()
+
+
+def test_run_sync_handles_opt_out_delete_in_same_run(tmp_path):
+    import csv
+
+    config = make_config(tmp_path)
+    master = Path(config.local_master_copy)
+    rows = [
+        {
+            "External ID": "1",
+            "First Name": "In",
+            "Last Name": "User",
+            "Phone 1": "9195550100",
+            "Opted In": "TRUE",
+        },
+        {
+            "External ID": "2",
+            "First Name": "Out",
+            "Last Name": "User",
+            "Phone 1": "",
+            "Opted In": "FALSE",
+        },
+    ]
+    with master.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    mock_transport = MagicMock()
+    transport = mock_transport.return_value
+
+    with (
+        patch("src.pipeline._download_master"),
+        patch("src.pipeline.create_transport", mock_transport),
+        patch("src.pipeline.send_success_alert"),
+    ):
+        result = run_sync(config)
+
+    assert result.status == "success"
+    assert result.rows_uploaded == 1
+    assert result.rows_deleted == 1
+    transport.upsert_batch.assert_called_once()
+    transport.delete_batch.assert_called_once()
+    assert Path(config.state_file).exists()
 
 
 def test_run_sync_success_includes_contact_names_in_alert(tmp_path):

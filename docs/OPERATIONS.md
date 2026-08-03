@@ -36,7 +36,7 @@ The container stops; bind-mounted data (`sync_state.json`, `sent_files/`, `faile
 
 ### Run a full sync immediately (via main entry point)
 
-Downloads the master CSV from OneDrive, detects new/updated rows, validates, uploads to Everbridge SFTP `/update`, and commits state on success.
+Downloads the master CSV from OneDrive, detects new/updated rows (last-write-wins per External ID), validates, uploads opt-ins to Everbridge SFTP `/update` and opt-outs to `/delete` in the same run, and commits sealed signatures on success.
 
 ```bash
 docker compose exec sftp-uploader uv run python main.py

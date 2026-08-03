@@ -35,7 +35,7 @@ def make_config(tmp_path: Path) -> Config:
         sftp_remote_filename="upload.csv",
         sftp_remote_delete_dir="/delete",
         sftp_remote_delete_filename="upload.csv",
-        delete_staging_csv="delete.csv",
+        delete_staging_csv=str(tmp_path / "delete.csv"),
         state_file=str(tmp_path / "sync_state.json"),
         local_master_copy=str(tmp_path / "master.csv"),
         upload_staging_csv=str(tmp_path / "staging.csv"),
@@ -113,9 +113,10 @@ def test_identify_new_rows_detects_new_and_updated(tmp_path):
     )
 
     first = identify_new_rows(config, "batch-1")
-    assert len(first.new_rows) == 2
+    assert len(first.opt_in_rows) == 2
     assert first.new_count == 2
     assert first.update_count == 0
+    assert first.delete_count == 0
 
     commit_state_entries(config, first.pending_entries)
 
@@ -144,7 +145,7 @@ def test_identify_new_rows_detects_new_and_updated(tmp_path):
     )
 
     second = identify_new_rows(config, "batch-2")
-    assert len(second.new_rows) == 2
+    assert len(second.opt_in_rows) == 2
     assert second.new_count == 1
     assert second.update_count == 1
 
@@ -212,3 +213,164 @@ def test_write_staging_csv_ignores_blank_header_columns(tmp_path):
     content = Path(config.upload_staging_csv).read_text(encoding="utf-8")
     assert "orphan" not in content
     assert "External ID" in content
+
+
+def test_last_write_wins_prefers_latest_row(tmp_path):
+    config = make_config(tmp_path)
+    write_master(
+        Path(config.local_master_copy),
+        [
+            {
+                "External ID": "100",
+                "First Name": "Ada",
+                "Last Name": "Lovelace",
+                "Phone 1": "9195550100",
+                "Opted In": "TRUE",
+            },
+            {
+                "External ID": "100",
+                "First Name": "Ada",
+                "Last Name": "Lovelace",
+                "Phone 1": "",
+                "Opted In": "FALSE",
+            },
+        ],
+    )
+
+    delta = identify_new_rows(config, "batch-1")
+    assert delta.opt_in_rows == []
+    assert len(delta.opt_out_rows) == 1
+    assert delta.delete_count == 1
+    # Seal entries cover both historical signatures for this External ID.
+    assert len(delta.pending_entries) == 2
+
+
+def test_opt_out_seals_prior_opt_in_and_blocks_resurrection(tmp_path):
+    config = make_config(tmp_path)
+    write_master(
+        Path(config.local_master_copy),
+        [
+            {
+                "External ID": "100",
+                "First Name": "Ada",
+                "Last Name": "Lovelace",
+                "Phone 1": "9195550100",
+                "Opted In": "TRUE",
+                "Submitter Email": "ada@example.com",
+                "Submitter Department": "Engineering",
+                "Submission Datetime": "2026-08-01T10:00:00-04:00",
+            }
+        ],
+    )
+    first = identify_new_rows(config, "batch-1")
+    commit_state_entries(config, first.pending_entries)
+
+    write_master(
+        Path(config.local_master_copy),
+        [
+            {
+                "External ID": "100",
+                "First Name": "Ada",
+                "Last Name": "Lovelace",
+                "Phone 1": "9195550100",
+                "Opted In": "TRUE",
+                "Submitter Email": "ada@example.com",
+                "Submitter Department": "Engineering",
+                "Submission Datetime": "2026-08-01T10:00:00-04:00",
+            },
+            {
+                "External ID": "100",
+                "First Name": "Ada",
+                "Last Name": "Lovelace",
+                "Phone 1": "",
+                "Opted In": "FALSE",
+                "Submitter Email": "ada@example.com",
+                "Submitter Department": "Engineering",
+                "Submission Datetime": "2026-08-03T12:00:00-04:00",
+            },
+        ],
+    )
+    second = identify_new_rows(config, "batch-2")
+    assert len(second.opt_out_rows) == 1
+    assert second.opt_in_rows == []
+    commit_state_entries(config, second.pending_entries)
+
+    # Stale opt-in must not resurface after opt-out is sealed.
+    third = identify_new_rows(config, "batch-3")
+    assert third.actionable_count == 0
+
+
+def test_re_opt_in_after_opt_out_is_actionable(tmp_path):
+    config = make_config(tmp_path)
+    rows = [
+        {
+            "External ID": "100",
+            "First Name": "Ada",
+            "Last Name": "Lovelace",
+            "Phone 1": "9195550100",
+            "Opted In": "TRUE",
+            "Submission Datetime": "2026-08-01T10:00:00-04:00",
+        },
+        {
+            "External ID": "100",
+            "First Name": "Ada",
+            "Last Name": "Lovelace",
+            "Phone 1": "",
+            "Opted In": "FALSE",
+            "Submission Datetime": "2026-08-02T10:00:00-04:00",
+        },
+    ]
+    write_master(Path(config.local_master_copy), rows)
+    first = identify_new_rows(config, "batch-1")
+    commit_state_entries(config, first.pending_entries)
+
+    rows.append(
+        {
+            "External ID": "100",
+            "First Name": "Ada",
+            "Last Name": "Lovelace",
+            "Phone 1": "9195550100",
+            "Opted In": "TRUE",
+            "Submission Datetime": "2026-08-03T10:00:00-04:00",
+        }
+    )
+    write_master(Path(config.local_master_copy), rows)
+    second = identify_new_rows(config, "batch-2")
+    assert len(second.opt_in_rows) == 1
+    assert second.update_count == 1
+    assert second.opt_out_rows == []
+
+
+def test_write_staging_csv_strips_metadata_columns(tmp_path):
+    config = make_config(tmp_path)
+    headers = [
+        "External ID",
+        "First Name",
+        "Last Name",
+        "Phone 1",
+        "END",
+        "Opted In",
+        "Submitter Email",
+        "Submitter Department",
+        "Submission Datetime",
+    ]
+    rows = [
+        {
+            "External ID": "1",
+            "First Name": "Test",
+            "Last Name": "User",
+            "Phone 1": "9195550100",
+            "END": "",
+            "Opted In": "TRUE",
+            "Submitter Email": "test@example.com",
+            "Submitter Department": "IT",
+            "Submission Datetime": "2026-08-03T15:00:00-04:00",
+        }
+    ]
+    write_staging_csv(config, headers, rows)
+    content = Path(config.upload_staging_csv).read_text(encoding="utf-8")
+    assert "Opted In" not in content
+    assert "Submitter Email" not in content
+    assert "Submission Datetime" not in content
+    assert "External ID" in content
+    assert "END" in content

@@ -57,10 +57,14 @@ def build_sync_success_contact_context(
     valid_rows: list[dict[str, str]],
     rejected_rows: list[dict[str, str]],
     rejection_issues: list[ValidationIssue],
+    *,
+    deleted_rows: list[dict[str, str]] | None = None,
 ) -> dict[str, str]:
     context: dict[str, str] = {}
     if valid_rows:
         context["Succeeded contacts"] = format_contact_list(valid_rows)
+    if deleted_rows:
+        context["Deleted contacts"] = format_contact_list(deleted_rows)
     if rejected_rows:
         context["Failed contacts"] = format_contact_list(
             rejected_rows,
@@ -73,10 +77,14 @@ def build_sync_failure_contact_context(
     valid_rows: list[dict[str, str]],
     rejected_rows: list[dict[str, str]],
     rejection_issues: list[ValidationIssue],
+    *,
+    deleted_rows: list[dict[str, str]] | None = None,
 ) -> dict[str, str]:
     context: dict[str, str] = {}
     if valid_rows:
         context["Attempted contacts"] = format_contact_list(valid_rows)
+    if deleted_rows:
+        context["Attempted deletes"] = format_contact_list(deleted_rows)
     if rejected_rows:
         context["Failed contacts"] = format_contact_list(
             rejected_rows,
@@ -94,10 +102,12 @@ def find_contact_in_master(config: Config, external_id: str) -> dict[str, str] |
         with open(config.local_master_copy, encoding="utf-8-sig") as handle:
             reader = csv.DictReader(handle)
             headers = normalize_csv_fieldnames(reader.fieldnames)
+            match: dict[str, str] | None = None
             for raw_row in reader:
                 row = normalize_csv_row(raw_row, headers)
                 if (row.get("External ID") or "").strip() == external_id:
-                    return row
+                    match = row
+            return match
     except FileNotFoundError:
         logger.debug("Master CSV not found for contact lookup: %s", config.local_master_copy)
     return None
